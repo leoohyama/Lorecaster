@@ -210,13 +210,28 @@ server <- function(input, output, session) {
     withProgress(message = 'Crunching Market Summaries...', value = 0.5, {
       con <- get_neon_con()
       vol_hist <- dbGetQuery(con, "SELECT date_pulled, is_graded, count(*) as n FROM lorcana_active_listings GROUP BY date_pulled, is_graded")
-      df_cap_raw <- dbGetQuery(con, "SELECT id, date_pulled FROM lorcana_active_listings WHERE is_graded IN ('No', 'false', '0')")
+      
+      # 🔴 RAM OPTIMIZATION: Aggregate Market Cap count inside PostgreSQL instead of pulling raw rows
+      df_cap_raw <- dbGetQuery(con, "
+        SELECT id, date_pulled, COUNT(*) as qty 
+        FROM lorcana_active_listings 
+        WHERE is_graded IN ('No', 'false', '0') 
+        GROUP BY id, date_pulled
+      ")
+      
       latest_prices <- dbGetQuery(con, "SELECT DISTINCT ON (tcgplayer_id) tcgplayer_id, market_price, pull_date FROM justtcg_prices ORDER BY tcgplayer_id, pull_date DESC")
       past_prices <- dbGetQuery(con, "SELECT DISTINCT ON (tcgplayer_id) tcgplayer_id, market_price, pull_date FROM justtcg_prices WHERE pull_date <= CURRENT_DATE - INTERVAL '7 days' ORDER BY tcgplayer_id, pull_date DESC")
       top_10_snap <- dbGetQuery(con, sprintf("SELECT id, count(*) as total FROM lorcana_active_listings WHERE date_pulled = '%s' GROUP BY id ORDER BY total DESC LIMIT 10", max(vol_hist$date_pulled)))
       dbDisconnect(con)
       
-      cap_hist <- df_cap_raw %>% mutate(date_pulled = force_pure_date(date_pulled), id = as.character(id)) %>% left_join(master_dict, by = "id") %>% left_join(latest_prices, by = "tcgplayer_id") %>% group_by(date_pulled) %>% summarise(total_cap = sum(market_price, na.rm = TRUE), .groups = 'drop')
+      # Now R just does a simple multiplication instead of tallying 100,000+ rows
+      cap_hist <- df_cap_raw %>% 
+        mutate(date_pulled = force_pure_date(date_pulled), id = as.character(id)) %>% 
+        left_join(master_dict, by = "id") %>% 
+        left_join(latest_prices, by = "tcgplayer_id") %>% 
+        group_by(date_pulled) %>% 
+        summarise(total_cap = sum(market_price * qty, na.rm = TRUE), .groups = 'drop')
+        
       list(vol = vol_hist, cap = cap_hist, latest = latest_prices, past = past_prices, top10 = top_10_snap)
     })
   })
@@ -272,15 +287,21 @@ server <- function(input, output, session) {
     withProgress(message = 'Pulling Latest Error Metrics...', value = 0.5, {
       con <- get_neon_con()
       
-      diag_raw <- tryCatch(dbGetQuery(con, "SELECT card_id as tcgplayer_id, model, diagnostic_run_date, max_error, mape FROM card_accuracy_summary WHERE model IN ('Chronos', 'GRU-15')"), error = function(e) data.frame())
+      # 🔴 RAM OPTIMIZATION: Filter for the latest date inside the SQL query, not inside R memory.
+      diag_query <- "
+        SELECT card_id as tcgplayer_id, model, diagnostic_run_date, max_error, mape 
+        FROM card_accuracy_summary 
+        WHERE model IN ('Chronos', '15-Day Hybrid GRU')
+        AND diagnostic_run_date = (SELECT MAX(diagnostic_run_date) FROM card_accuracy_summary)
+      "
+      diag_latest <- tryCatch(dbGetQuery(con, diag_query), error = function(e) data.frame())
       
-      if(nrow(diag_raw) == 0) {
+      if(nrow(diag_latest) == 0) {
         dbDisconnect(con)
         return(NULL)
       }
       
-      max_date <- max(as.Date(diag_raw$diagnostic_run_date), na.rm = TRUE)
-      diag_latest <- diag_raw %>% filter(as.Date(diagnostic_run_date) == max_date) %>% mutate(tcgplayer_id = as.integer(tcgplayer_id))
+      diag_latest <- diag_latest %>% mutate(tcgplayer_id = as.integer(tcgplayer_id))
       
       c_pred <- tryCatch(dbGetQuery(con, "SELECT card_id as tcgplayer_id, target_date, pred_price FROM chronos_predictions WHERE run_id = (SELECT MAX(run_id) FROM chronos_predictions)"), error = function(e) data.frame())
       g_pred <- tryCatch(dbGetQuery(con, "SELECT card_id as tcgplayer_id, target_date, pred_price FROM gru_predictions WHERE run_id = (SELECT MAX(run_id) FROM gru_predictions)"), error = function(e) data.frame())
