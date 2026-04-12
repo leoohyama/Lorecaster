@@ -52,6 +52,56 @@ ui <- page_navbar(
       .green-text { color: #2ecc71; font-weight: bold; }
       .red-text { color: #e74c3c; font-weight: bold; }
       .staleness-box { background-color: #2b3e50; border-left: 5px solid #18bc9c; padding: 15px; border-radius: 5px; margin-bottom: 15px; color: #ecf0f1;}
+      
+      /* HIJACKED NATIVE SHINY LOADER */
+      .shiny-progress-container {
+        position: fixed !important;
+        top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important;
+        width: 100vw !important; height: 100vh !important;
+        background: rgba(15, 23, 30, 0.8) !important;
+        backdrop-filter: blur(3px) !important;
+        z-index: 9999 !important;
+        display: flex !important;
+        justify-content: center !important;
+        align-items: center !important;
+      }
+      .shiny-progress {
+        background: #1a252f !important;
+        padding: 40px 60px !important;
+        border-radius: 10px !important;
+        border: 2px solid #18bc9c !important;
+        text-align: center !important;
+        box-shadow: 0 10px 40px rgba(0,0,0,0.9) !important;
+        top: auto !important; left: auto !important; right: auto !important;
+        width: auto !important;
+        position: relative !important;
+      }
+      .shiny-progress .progress-message {
+        color: #18bc9c !important;
+        font-weight: bold !important;
+        font-size: 18px !important;
+        padding: 0 !important;
+      }
+      .shiny-progress::before {
+        content: '';
+        display: block;
+        border: 5px solid #34495e;
+        border-top: 5px solid #18bc9c;
+        border-radius: 50%;
+        width: 50px; height: 50px;
+        animation: spin 1s linear infinite;
+        margin: 0 auto 15px auto;
+      }
+      .shiny-progress .progress-detail { display: none !important; }
+      @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+      
+      /* THE TRUE BSLIB DROPDOWN FIX */
+      .filter-card, .filter-card .card-body {
+        overflow: visible !important;
+      }
+      .selectize-dropdown {
+        z-index: 99999 !important;
+      }
     ")),
     tags$script(HTML("document.addEventListener('DOMContentLoaded', function() { setInterval(function() { var ticker = document.getElementById('top10-ticker'); if (ticker && !ticker.matches(':hover')) { ticker.scrollTop += 1; if (ticker.scrollTop >= (ticker.scrollHeight / 2)) { ticker.scrollTop = 0; } } }, 30); });"))
   ),
@@ -83,31 +133,38 @@ ui <- page_navbar(
   nav_panel(title = "Pricing", value = "Pricing",
     layout_sidebar(
       sidebar = sidebar(
-        title = "Pricing Selection", 
-        uiOutput("sidebar_pricing_image"),
-        hr(),
-        selectInput("pricing_set_filter", "Filter by Set:", choices = c("All Sets", sort(unique(master_dict$set_name)))),
-        selectizeInput("pricing_selected_card", "Select a Card:", 
-                       choices = sort(unique(master_dict$cardname)), 
-                       selected = "Stitch - Carefree Surfer - Enchanted"),
-        hr(), 
-        checkboxGroupInput("show_models", "Select Models:", 
-                           choices = c("Chronos", "15-Day Hybrid GRU"), 
-                           selected = c("Chronos", "15-Day Hybrid GRU")),
-        br(),
-        checkboxInput("show_ci", "Show Chronos Confidence Interval", value = FALSE)
+        title = "Card Stats", 
+        uiOutput("sidebar_pricing_image")
       ),
       div(
-        uiOutput("pricing_current_status"),
         card(
-          card_header("Model Accuracy vs. Baseline (Card Specific)"),
-          p(style = "color: #bbb; font-size: 13px;", "Comparing Median Absolute Percentage Error (MdAPE) of our models against a 'Persistence Baseline' (assuming the price never changes). Models should consistently fall below the transparent backdrop column."),
-          plotlyOutput("error_horizon_plot", height = "300px")
+          class = "filter-card",
+          style = "padding: 10px; margin-bottom: 15px; background-color: #2b3e50; border: 1px solid #18bc9c;",
+          layout_columns(
+            col_widths = c(4, 4, 4),
+            selectInput("pricing_set_filter", "Filter by Set:", choices = c("All Sets", sort(unique(master_dict$set_name)))),
+            selectizeInput("pricing_selected_card", "Select a Card:", 
+                           choices = sort(unique(master_dict$cardname)), 
+                           selected = "Stitch - Carefree Surfer - Enchanted"),
+            div(
+              checkboxGroupInput("show_models", "Select Models:", 
+                                 choices = c("Chronos", "15-Day Hybrid GRU"), 
+                                 selected = c("Chronos", "15-Day Hybrid GRU"), inline = TRUE),
+              checkboxInput("show_ci", "Show Chronos Confidence Interval", value = FALSE)
+            )
+          )
         ),
+        uiOutput("pricing_current_status"),
+        
         card(
           card_header("Micro View: 30-Day History & Backtest (Auto-Scaled)"), 
           p(style = "color: #bbb; font-size: 13px; margin-bottom: 0px;", "Dotted/Dashed lines = Live Forecast | Faded solid lines = Past shadow forecasts"),
           plotlyOutput("pricing_zoom_plot", height = "450px")
+        ),
+        card(
+          card_header("Model Accuracy vs. Baseline (Card Specific)"),
+          p(style = "color: #bbb; font-size: 13px;", "Comparing Median Absolute Percentage Error (MdAPE) of our models against a 'Persistence Baseline' (assuming the price never changes). Models should consistently fall below the transparent backdrop column."),
+          plotlyOutput("error_horizon_plot", height = "300px")
         ),
         card(
           card_header("Macro View: All-Time History & Long Term Forecast"),
@@ -147,6 +204,12 @@ ui <- page_navbar(
 )
 
 server <- function(input, output, session) {
+
+  observeEvent(input$go_to_pricing, {
+    updateSelectInput(session, "pricing_set_filter", selected = "All Sets")
+    updateSelectizeInput(session, "pricing_selected_card", selected = input$go_to_pricing)
+    nav_select("main_nav", "Pricing")
+  })
 
   get_neon_con <- function(retries = 3) {
     for (i in 1:retries) {
@@ -342,8 +405,11 @@ server <- function(input, output, session) {
         arrange(desc(`Avg Sample Entropy`))
         
       card_table_df <- unified %>%
-        mutate(Image = paste0('<img src="card_photos/', folder_name, '/', id, '.avif" style="height: 75px; border-radius: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.5);">')) %>%
-        select(Image, Card = cardname, `Current Price` = current_price,
+        mutate(
+          Image = paste0('<img src="card_photos/', folder_name, '/', id, '.avif" style="height: 75px; border-radius: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.5);">'),
+          Action = paste0('<button class="btn btn-sm" style="background-color:#18bc9c; color:white; font-weight:bold;" onclick="Shiny.setInputValue(\'go_to_pricing\', \'', str_replace_all(cardname, "'", "\\\\'"), '\', {priority: \'event\'})">View Forecast</button>')
+        ) %>%
+        select(Action, Image, Card = cardname, `Current Price` = current_price,
                `Avg 30d Forecast ($)` = blended_pred,
                `Avg 30d Trend (%)` = blended_change_pct,
                `Chronos 30d Est.` = chronos_change_pct,
@@ -507,7 +573,6 @@ server <- function(input, output, session) {
     latest_pull <- max(d$hist$pull_date, na.rm = TRUE)
     curr_price <- d$hist %>% filter(pull_date == latest_pull) %>% pull(market_price) %>% .[1]
     
-    # Calculate Ensemble Average for the single card
     c_val <- if(nrow(d$chronos) > 0) d$chronos$pred_price[nrow(d$chronos)] else NA
     g_val <- if(nrow(d$gru) > 0) d$gru$pred_price[nrow(d$gru)] else NA
     
@@ -583,7 +648,7 @@ server <- function(input, output, session) {
           z_c_shadow_bridged <- bind_rows(c_shadow_anchors, z_c_shadow) %>% arrange(cardname, run_id, plot_date)
 
           p <- p + geom_line(data=z_c_shadow_bridged, aes(x=plot_date, y=pred_price, group=interaction(cardname, run_id), 
-                                           text="Shadow"), color="#f1c40f", linewidth=0.5, alpha=0.3)
+                                           text="Shadow"), color="#f1c40f", linewidth=0.5, alpha=0.2)
         }
       }
     }
@@ -607,7 +672,7 @@ server <- function(input, output, session) {
           z_g_shadow_bridged <- bind_rows(g_shadow_anchors, z_g_shadow) %>% arrange(cardname, run_id, plot_date)
 
           p <- p + geom_line(data=z_g_shadow_bridged, aes(x=plot_date, y=pred_price, group=interaction(cardname, run_id), 
-                                           text="Shadow"), color="#2ecc71", linewidth=0.5, alpha=0.3)
+                                           text="Shadow"), color="#2ecc71", linewidth=0.5, alpha=0.2)
         }
       }
     }
@@ -660,7 +725,7 @@ server <- function(input, output, session) {
           c_shadow_anchors <- m_c_shadow %>% distinct(cardname, run_id, run_date) %>% left_join(d$hist %>% select(cardname, pull_date, market_price), by = c("cardname", "run_date" = "pull_date")) %>% filter(!is.na(market_price)) %>% select(cardname, run_id, plot_date = run_date, pred_price = market_price)
           m_c_shadow_bridged <- bind_rows(c_shadow_anchors, m_c_shadow) %>% arrange(cardname, run_id, plot_date) 
           
-          p <- p + geom_line(data=m_c_shadow_bridged, aes(x=plot_date, y=pred_price, group=interaction(cardname, run_id), text="Shadow"), color="#f1c40f", linewidth=0.5, alpha=0.3)
+          p <- p + geom_line(data=m_c_shadow_bridged, aes(x=plot_date, y=pred_price, group=interaction(cardname, run_id), text="Shadow"), color="#f1c40f", linewidth=0.5, alpha=0.2)
         }
       }
     }
@@ -682,16 +747,16 @@ server <- function(input, output, session) {
           g_shadow_anchors <- m_g_shadow %>% distinct(cardname, run_id, run_date) %>% left_join(d$hist %>% select(cardname, pull_date, market_price), by = c("cardname", "run_date" = "pull_date")) %>% filter(!is.na(market_price)) %>% select(cardname, run_id, plot_date = run_date, pred_price = market_price)
           m_g_shadow_bridged <- bind_rows(g_shadow_anchors, m_g_shadow) %>% arrange(cardname, run_id, plot_date) 
           
-          p <- p + geom_line(data=m_g_shadow_bridged, aes(x=plot_date, y=pred_price, group=interaction(cardname, run_id), text="Shadow"), color="#2ecc71", linewidth=0.5, alpha=0.3)
+          p <- p + geom_line(data=m_g_shadow_bridged, aes(x=plot_date, y=pred_price, group=interaction(cardname, run_id), text="Shadow"), color="#2ecc71", linewidth=0.5, alpha=0.2)
         }
       }
     }
     
     p <- p + 
       geom_line(data=m_hist, aes(x=plot_date, y=market_price, group=cardname, 
-                                 text=paste0("Date: ", format(plot_date, "%b %d, %Y"), "<br>Actual Price: ", scales::dollar(market_price))), color="#3498db", linewidth=1.2) +
+                                 text=paste0("Date: ", format(plot_date, "%b %d, %Y"), "<br>Actual Price: ", scales::dollar(market_price))), color="#3498db", linewidth=1) +
       geom_point(data=current_anchors, aes(x=plot_date, y=market_price, 
-                                 text=paste0("Today (Anchor): ", format(plot_date, "%b %d, %Y"), "<br>Current Price: ", scales::dollar(market_price))), color="#3498db", size=4, shape=18)
+                                 text=paste0("Today (Anchor): ", format(plot_date, "%b %d, %Y"), "<br>Current Price: ", scales::dollar(market_price))), color="#3498db", size=4, shape=19)
     
     p_ly <- ggplotly(p + my_dark_theme() + labs(x="Date", y="Market Price"), dynamicTicks = TRUE, tooltip = "text")
     p_ly <- clean_plotly_tooltips(p_ly)
