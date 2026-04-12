@@ -15,7 +15,7 @@ master_dict <- read_csv("app_data/target_cards_with_epids2.csv", show_col_types 
     cardname = paste(name, replace_na(version, ""), rarity, sep = " - "),
     folder_name = str_replace_all(set_name, "[ ']", "_")
   ) %>%
-  select(id, tcgplayer_id, cardname, set_name, folder_name) %>%
+  select(id, tcgplayer_id, cardname, set_name, folder_name, rarity) %>%
   distinct(id, .keep_all = TRUE)
 
 thematic_shiny()
@@ -84,6 +84,8 @@ ui <- page_navbar(
     layout_sidebar(
       sidebar = sidebar(
         title = "Pricing Selection", 
+        uiOutput("sidebar_pricing_image"),
+        hr(),
         selectInput("pricing_set_filter", "Filter by Set:", choices = c("All Sets", sort(unique(master_dict$set_name)))),
         selectizeInput("pricing_selected_card", "Select a Card:", 
                        choices = sort(unique(master_dict$cardname)), 
@@ -93,11 +95,10 @@ ui <- page_navbar(
                            choices = c("Chronos", "15-Day Hybrid GRU"), 
                            selected = c("Chronos", "15-Day Hybrid GRU")),
         br(),
-        checkboxInput("show_ci", "Show Chronos Confidence Interval", value = FALSE),
-        hr(),
-        uiOutput("sidebar_pricing_image")
+        checkboxInput("show_ci", "Show Chronos Confidence Interval", value = FALSE)
       ),
       div(
+        uiOutput("pricing_current_status"),
         card(
           card_header("Model Accuracy vs. Baseline (Card Specific)"),
           p(style = "color: #bbb; font-size: 13px;", "Comparing Median Absolute Percentage Error (MdAPE) of our models against a 'Persistence Baseline' (assuming the price never changes). Models should consistently fall below the transparent backdrop column."),
@@ -105,7 +106,7 @@ ui <- page_navbar(
         ),
         card(
           card_header("Micro View: 30-Day History & Backtest (Auto-Scaled)"), 
-          p(style = "color: #bbb; font-size: 13px; margin-bottom: 0px;", "Dotted/Dashed lines = Live Forecast | Faded solid lines = Past 7 days of shadow forecasts"),
+          p(style = "color: #bbb; font-size: 13px; margin-bottom: 0px;", "Dotted/Dashed lines = Live Forecast | Faded solid lines = Past shadow forecasts"),
           plotlyOutput("pricing_zoom_plot", height = "450px")
         ),
         card(
@@ -126,27 +127,19 @@ ui <- page_navbar(
   nav_panel(title = "ML Deeper Dive", value = "ML Deeper Dive",
     layout_sidebar(
       sidebar = sidebar(
-        title = "Diagnostic Filters",
-        selectInput("diag_model", "Target Model:", choices = c("Chronos", "15-Day Hybrid GRU")),
-        hr(),
+        title = "Diagnostic Actions",
         actionButton("calc_diagnostics", " Fetch Latest Run", icon = icon("database"), class = "btn-info btn-sm")
       ),
       div(
-        layout_columns(
-          col_widths = c(6, 6),
-          card(
-            card_header(tags$span(style = "color: #2ecc71;", icon("arrow-trend-up"), " Top Predicted Incline (30-Day)")),
-            uiOutput("top_incline_box")
-          ),
-          card(
-            card_header(tags$span(style = "color: #e74c3c;", icon("arrow-trend-down"), " Top Predicted Decline (30-Day)")),
-            uiOutput("top_decline_box")
-          )
+        card(
+          card_header("Set-Level Market Trajectory & Forecasts"),
+          p(style = "color: #bbb; font-size: 14px;", "Comparing median actual price trajectory over the past 30 days alongside the median 30-day forecast for the Chronos and Hybrid GRU models."),
+          DTOutput("set_diagnostics_table")
         ),
         card(
-          card_header("Model Error Tracking & 30-Day Projections"),
-          p(style = "color: #bbb; font-size: 14px;", "Accuracy metrics are calculated against historical out-of-sample backtests. Sorted by lowest Mean Absolute Percentage Error (MAPE)."),
-          DTOutput("diagnostics_table")
+          card_header("Card-Level Forecasts & Entropy"),
+          p(style = "color: #bbb; font-size: 14px;", "Comparing 30-day projected changes against historical Sample Entropy. Sorted by Entropy to highlight the most unpredictable, erratic pricing behaviors."),
+          DTOutput("card_diagnostics_table")
         )
       )
     )
@@ -211,7 +204,6 @@ server <- function(input, output, session) {
       con <- get_neon_con()
       vol_hist <- dbGetQuery(con, "SELECT date_pulled, is_graded, count(*) as n FROM lorcana_active_listings GROUP BY date_pulled, is_graded")
       
-      # 🔴 RAM OPTIMIZATION: Aggregate Market Cap count inside PostgreSQL instead of pulling raw rows
       df_cap_raw <- dbGetQuery(con, "
         SELECT id, date_pulled, COUNT(*) as qty 
         FROM lorcana_active_listings 
@@ -221,10 +213,10 @@ server <- function(input, output, session) {
       
       latest_prices <- dbGetQuery(con, "SELECT DISTINCT ON (tcgplayer_id) tcgplayer_id, market_price, pull_date FROM justtcg_prices ORDER BY tcgplayer_id, pull_date DESC")
       past_prices <- dbGetQuery(con, "SELECT DISTINCT ON (tcgplayer_id) tcgplayer_id, market_price, pull_date FROM justtcg_prices WHERE pull_date <= CURRENT_DATE - INTERVAL '7 days' ORDER BY tcgplayer_id, pull_date DESC")
+      past_30_prices <- dbGetQuery(con, "SELECT DISTINCT ON (tcgplayer_id) tcgplayer_id, market_price as price_30d_ago, pull_date FROM justtcg_prices WHERE pull_date <= CURRENT_DATE - INTERVAL '30 days' ORDER BY tcgplayer_id, pull_date DESC")
       top_10_snap <- dbGetQuery(con, sprintf("SELECT id, count(*) as total FROM lorcana_active_listings WHERE date_pulled = '%s' GROUP BY id ORDER BY total DESC LIMIT 10", max(vol_hist$date_pulled)))
       dbDisconnect(con)
       
-      # Now R just does a simple multiplication instead of tallying 100,000+ rows
       cap_hist <- df_cap_raw %>% 
         mutate(date_pulled = force_pure_date(date_pulled), id = as.character(id)) %>% 
         left_join(master_dict, by = "id") %>% 
@@ -232,7 +224,7 @@ server <- function(input, output, session) {
         group_by(date_pulled) %>% 
         summarise(total_cap = sum(market_price * qty, na.rm = TRUE), .groups = 'drop')
         
-      list(vol = vol_hist, cap = cap_hist, latest = latest_prices, past = past_prices, top10 = top_10_snap)
+      list(vol = vol_hist, cap = cap_hist, latest = latest_prices, past = past_prices, past_30 = past_30_prices, top10 = top_10_snap)
     })
   })
 
@@ -284,104 +276,111 @@ server <- function(input, output, session) {
   })
 
   ml_diag_data <- eventReactive(input$calc_diagnostics, ignoreNULL = FALSE, {
-    withProgress(message = 'Pulling Latest Error Metrics...', value = 0.5, {
+    withProgress(message = 'Crunching Global Unified Data...', value = 0.5, {
       con <- get_neon_con()
       
-      # 🔴 RAM OPTIMIZATION: Filter for the latest date inside the SQL query, not inside R memory.
-      diag_query <- "
-        SELECT card_id as tcgplayer_id, model, diagnostic_run_date, max_error, mape 
-        FROM card_accuracy_summary 
-        WHERE model IN ('Chronos', '15-Day Hybrid GRU')
-        AND diagnostic_run_date = (SELECT MAX(diagnostic_run_date) FROM card_accuracy_summary)
-      "
-      diag_latest <- tryCatch(dbGetQuery(con, diag_query), error = function(e) data.frame())
-      
-      if(nrow(diag_latest) == 0) {
-        dbDisconnect(con)
-        return(NULL)
-      }
-      
-      diag_latest <- diag_latest %>% mutate(tcgplayer_id = as.integer(tcgplayer_id))
-      
+      metrics_df <- tryCatch(dbGetQuery(con, "SELECT tcgplayer_id, samp_ent_30d FROM card_ts_metrics"), error = function(e) data.frame())
       c_pred <- tryCatch(dbGetQuery(con, "SELECT card_id as tcgplayer_id, target_date, pred_price FROM chronos_predictions WHERE run_id = (SELECT MAX(run_id) FROM chronos_predictions)"), error = function(e) data.frame())
       g_pred <- tryCatch(dbGetQuery(con, "SELECT card_id as tcgplayer_id, target_date, pred_price FROM gru_predictions WHERE run_id = (SELECT MAX(run_id) FROM gru_predictions)"), error = function(e) data.frame())
       dbDisconnect(con)
       
-      all_30 <- data.frame()
+      if(nrow(metrics_df) > 0) metrics_df$tcgplayer_id <- as.integer(metrics_df$tcgplayer_id)
+      
+      c_30 <- data.frame(tcgplayer_id=integer(), chronos_pred=numeric())
+      g_30 <- data.frame(tcgplayer_id=integer(), gru_pred=numeric())
+      
       if(nrow(c_pred) > 0) {
-        c_30 <- c_pred %>% group_by(tcgplayer_id) %>% filter(target_date == max(target_date)) %>% slice_tail(n=1) %>% ungroup() %>% mutate(model = "Chronos", tcgplayer_id = as.integer(tcgplayer_id))
-        all_30 <- bind_rows(all_30, c_30)
+        c_30 <- c_pred %>% mutate(tcgplayer_id = as.integer(tcgplayer_id)) %>% group_by(tcgplayer_id) %>% filter(target_date == max(target_date)) %>% slice_tail(n=1) %>% ungroup() %>% select(tcgplayer_id, chronos_pred = pred_price)
       }
       if(nrow(g_pred) > 0) {
-        g_30 <- g_pred %>% group_by(tcgplayer_id) %>% filter(target_date == max(target_date)) %>% slice_tail(n=1) %>% ungroup() %>% mutate(model = "15-Day Hybrid GRU", tcgplayer_id = as.integer(tcgplayer_id))
-        all_30 <- bind_rows(all_30, g_30)
+        g_30 <- g_pred %>% mutate(tcgplayer_id = as.integer(tcgplayer_id)) %>% group_by(tcgplayer_id) %>% filter(target_date == max(target_date)) %>% slice_tail(n=1) %>% ungroup() %>% select(tcgplayer_id, gru_pred = pred_price)
       }
       
       req(summary_data())
       actuals <- summary_data()$latest %>% select(tcgplayer_id, current_price = market_price)
+      actuals_30d <- summary_data()$past_30 %>% select(tcgplayer_id, price_30d_ago)
       
-      res <- diag_latest %>%
-        inner_join(actuals, by = "tcgplayer_id") %>%
-        inner_join(all_30, by = c("tcgplayer_id", "model")) %>%
-        left_join(master_dict, by = "tcgplayer_id") %>%
+      unified <- master_dict %>%
+        left_join(actuals, by = "tcgplayer_id") %>%
+        left_join(actuals_30d, by = "tcgplayer_id")
+        
+      if(nrow(metrics_df) > 0) {
+         unified <- unified %>% left_join(metrics_df, by = "tcgplayer_id")
+      } else {
+         unified <- unified %>% mutate(samp_ent_30d = NA)
+      }
+      
+      if(nrow(c_30) > 0) unified <- unified %>% left_join(c_30, by = "tcgplayer_id") else unified <- unified %>% mutate(chronos_pred = NA)
+      if(nrow(g_30) > 0) unified <- unified %>% left_join(g_30, by = "tcgplayer_id") else unified <- unified %>% mutate(gru_pred = NA)
+      
+      unified <- unified %>%
+        rowwise() %>%
         mutate(
-          diff_abs = pred_price - current_price,
-          diff_pct = (pred_price - current_price) / current_price
+          blended_pred = mean(c(chronos_pred, gru_pred), na.rm = TRUE)
         ) %>%
-        select(tcgplayer_id, id, folder_name, Card = cardname, Model = model, `Current Price` = current_price, `30d Forecast` = pred_price,
-               `30d Change ($)` = diff_abs, `30d Change (%)` = diff_pct,
-               MAPE = mape, `Max Error` = max_error) %>%
-        arrange(MAPE) 
-      
-      return(res)
+        ungroup() %>%
+        mutate(
+          actual_30d_change_abs = current_price - price_30d_ago,
+          actual_30d_change_pct = (current_price - price_30d_ago) / price_30d_ago,
+          chronos_change_pct = (chronos_pred - current_price) / current_price,
+          gru_change_pct = (gru_pred - current_price) / current_price,
+          blended_change_pct = (blended_pred - current_price) / current_price
+        )
+        
+      set_summary <- unified %>%
+        filter(set_name != "Promo Set 2", rarity != "Epic") %>%
+        group_by(Set = set_name) %>%
+        summarise(
+          `Median 30d Trajectory ($)` = median(actual_30d_change_abs, na.rm = TRUE),
+          `Median 30d Trajectory (%)` = median(actual_30d_change_pct, na.rm = TRUE),
+          `Chronos 30d Forecast (%)` = median(chronos_change_pct, na.rm = TRUE),
+          `GRU 30d Forecast (%)` = median(gru_change_pct, na.rm = TRUE),
+          `Avg 30d Trend (%)` = median(blended_change_pct, na.rm = TRUE),
+          `Avg Sample Entropy` = mean(samp_ent_30d, na.rm = TRUE),
+          .groups = "drop"
+        ) %>%
+        arrange(desc(`Avg Sample Entropy`))
+        
+      card_table_df <- unified %>%
+        mutate(Image = paste0('<img src="card_photos/', folder_name, '/', id, '.avif" style="height: 75px; border-radius: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.5);">')) %>%
+        select(Image, Card = cardname, `Current Price` = current_price,
+               `Avg 30d Forecast ($)` = blended_pred,
+               `Avg 30d Trend (%)` = blended_change_pct,
+               `Chronos 30d Est.` = chronos_change_pct,
+               `GRU 30d Est.` = gru_change_pct,
+               `Sample Entropy` = samp_ent_30d) %>%
+        arrange(desc(`Sample Entropy`))
+        
+      list(set_data = set_summary, card_data = card_table_df)
     })
   })
   
-  output$diagnostics_table <- renderDT({
-    df <- ml_diag_data()
+  output$set_diagnostics_table <- renderDT({
+    df <- ml_diag_data()$set_data
     req(df)
-    
-    df_filtered <- df %>% filter(Model == input$diag_model) %>% select(-tcgplayer_id, -id, -folder_name)
-    
-    datatable(df_filtered, options = list(pageLength = 15, dom = 'tip'), rownames = FALSE) %>%
-      formatCurrency(c("Current Price", "30d Forecast", "30d Change ($)"), currency = "$") %>%
-      formatPercentage(c("30d Change (%)", "MAPE", "Max Error"), 2) %>%
-      formatStyle('30d Change (%)', color = styleInterval(0, c('#e74c3c', '#2ecc71'))) %>%
-      formatStyle('30d Change ($)', color = styleInterval(0, c('#e74c3c', '#2ecc71')))
-  })
-  
-  output$top_incline_box <- renderUI({
-    df <- ml_diag_data()
-    req(df)
-    
-    top_incline <- df %>% filter(Model == input$diag_model) %>% arrange(desc(`30d Change (%)`)) %>% slice(1)
-    if(nrow(top_incline) == 0) return(div("No data available."))
-    
-    tags$div(style = "display: flex; align-items: center;",
-             tags$img(src=paste0("card_photos/", top_incline$folder_name, "/", top_incline$id, ".avif"), style="width: 70px; border-radius: 6px; margin-right: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.5);"),
-             tags$div(
-               tags$span(style="color: #ecf0f1; font-size: 15px;", top_incline$Card), tags$br(),
-               tags$span(style="color: #2ecc71; font-size: 18px;", paste0("+", scales::percent(top_incline$`30d Change (%)`, accuracy = 0.1))),
-               tags$span(style="color: #bbb; font-size: 13px;", paste(" | Est.", scales::dollar(top_incline$`30d Forecast`)))
-             ))
-  })
-  
-  output$top_decline_box <- renderUI({
-    df <- ml_diag_data()
-    req(df)
-    
-    top_decline <- df %>% filter(Model == input$diag_model) %>% arrange(`30d Change (%)`) %>% slice(1)
-    if(nrow(top_decline) == 0) return(div("No data available."))
-    
-    tags$div(style = "display: flex; align-items: center;",
-             tags$img(src=paste0("card_photos/", top_decline$folder_name, "/", top_decline$id, ".avif"), style="width: 70px; border-radius: 6px; margin-right: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.5);"),
-             tags$div(
-               tags$span(style="color: #ecf0f1; font-size: 15px;", top_decline$Card), tags$br(),
-               tags$span(style="color: #e74c3c; font-size: 18px;", scales::percent(top_decline$`30d Change (%)`, accuracy = 0.1)),
-               tags$span(style="color: #bbb; font-size: 13px;", paste(" | Est.", scales::dollar(top_decline$`30d Forecast`)))
-             ))
+    datatable(df, options = list(pageLength = 10, dom = 't'), rownames = FALSE) %>%
+      formatCurrency("Median 30d Trajectory ($)", currency = "$") %>%
+      formatPercentage(c("Median 30d Trajectory (%)", "Chronos 30d Forecast (%)", "GRU 30d Forecast (%)", "Avg 30d Trend (%)"), 2) %>%
+      formatRound("Avg Sample Entropy", 3) %>%
+      formatStyle('Median 30d Trajectory (%)', color = styleInterval(0, c('#e74c3c', '#2ecc71'))) %>%
+      formatStyle('Chronos 30d Forecast (%)', color = styleInterval(0, c('#e74c3c', '#2ecc71'))) %>%
+      formatStyle('GRU 30d Forecast (%)', color = styleInterval(0, c('#e74c3c', '#2ecc71'))) %>%
+      formatStyle('Avg 30d Trend (%)', color = styleInterval(0, c('#e74c3c', '#2ecc71')))
   })
 
+  output$card_diagnostics_table <- renderDT({
+    df <- ml_diag_data()$card_data
+    req(df)
+    datatable(df, escape = FALSE, options = list(pageLength = 15, dom = 'tip'), rownames = FALSE) %>%
+      formatCurrency(c("Current Price", "Avg 30d Forecast ($)"), currency = "$") %>%
+      formatPercentage(c("Chronos 30d Est.", "GRU 30d Est.", "Avg 30d Trend (%)"), 2) %>%
+      formatRound("Sample Entropy", 3) %>%
+      formatStyle("Chronos 30d Est.", color = styleInterval(0, c('#e74c3c', '#2ecc71'))) %>%
+      formatStyle("GRU 30d Est.", color = styleInterval(0, c('#e74c3c', '#2ecc71'))) %>%
+      formatStyle("Avg 30d Trend (%)", color = styleInterval(0, c('#e74c3c', '#2ecc71'))) %>%
+      formatStyle("Avg 30d Forecast ($)", valueColumns = "Avg 30d Trend (%)", color = styleInterval(0, c('#e74c3c', '#2ecc71')))
+  })
+  
   market_movers <- reactive({
     req(summary_data())
     s <- summary_data()
@@ -500,6 +499,59 @@ server <- function(input, output, session) {
     )
   })
 
+  output$pricing_current_status <- renderUI({
+    req(pricing_details())
+    d <- pricing_details()
+    req(nrow(d$hist) > 0)
+    
+    latest_pull <- max(d$hist$pull_date, na.rm = TRUE)
+    curr_price <- d$hist %>% filter(pull_date == latest_pull) %>% pull(market_price) %>% .[1]
+    
+    # Calculate Ensemble Average for the single card
+    c_val <- if(nrow(d$chronos) > 0) d$chronos$pred_price[nrow(d$chronos)] else NA
+    g_val <- if(nrow(d$gru) > 0) d$gru$pred_price[nrow(d$gru)] else NA
+    
+    preds <- c(c_val, g_val)
+    preds <- preds[!is.na(preds)]
+    
+    if(length(preds) > 0) {
+      avg_pred <- mean(preds)
+      trend_pct <- (avg_pred - curr_price) / curr_price
+      trend_color <- ifelse(trend_pct >= 0, "#2ecc71", "#e74c3c")
+      trend_icon <- ifelse(trend_pct >= 0, "▲", "▼")
+      
+      ensemble_html <- tags$div(style = "text-align: center;",
+        tags$span(style = "color: #bbb; font-size: 14px; text-transform: uppercase; letter-spacing: 1px;", "30-Day Ensemble Forecast"),
+        tags$br(),
+        tags$span(style = paste0("color: ", trend_color, "; font-size: 28px; font-weight: bold;"), 
+                  scales::dollar(avg_pred)),
+        tags$span(style = paste0("color: ", trend_color, "; font-size: 16px; margin-left: 8px;"), 
+                  sprintf("%s %s", trend_icon, scales::percent(abs(trend_pct), accuracy = 0.1)))
+      )
+    } else {
+      ensemble_html <- tags$div(style = "text-align: center;",
+        tags$span(style = "color: #bbb; font-size: 14px; text-transform: uppercase; letter-spacing: 1px;", "30-Day Ensemble Forecast"),
+        tags$br(),
+        tags$span(style = "color: #7f8c8d; font-size: 20px; font-weight: bold;", "N/A")
+      )
+    }
+    
+    tags$div(
+      style = "display: flex; justify-content: space-between; align-items: center; background: linear-gradient(135deg, #2b3e50, #1a252f); padding: 15px 20px; border-radius: 8px; border-left: 5px solid #3498db; margin-bottom: 15px;",
+      tags$div(
+        tags$span(style = "color: #bbb; font-size: 14px; text-transform: uppercase; letter-spacing: 1px;", "Current Market Price"),
+        tags$br(),
+        tags$span(style = "color: #3498db; font-size: 28px; font-weight: bold;", scales::dollar(curr_price))
+      ),
+      ensemble_html,
+      tags$div(style = "text-align: right;",
+        tags$span(style = "color: #bbb; font-size: 14px;", "Last Updated"),
+        tags$br(),
+        tags$span(style = "color: #ecf0f1; font-size: 16px; font-weight: bold;", format(latest_pull, "%B %d, %Y"))
+      )
+    )
+  })
+
   output$pricing_zoom_plot <- renderPlotly({
     req(pricing_details()); d <- pricing_details()
     latest_pull <- max(d$hist$pull_date, na.rm = TRUE)
@@ -507,11 +559,7 @@ server <- function(input, output, session) {
     z_hist <- d$hist %>% filter(pull_date >= latest_pull - 30) %>% rename(plot_date = pull_date)
     current_anchors <- z_hist %>% filter(plot_date == latest_pull) %>% select(tcgplayer_id, cardname, plot_date, pred_price = market_price)
 
-    p <- ggplot() + 
-      geom_line(data=z_hist, aes(x=plot_date, y=market_price, group=cardname, 
-                                 text=paste0("Date: ", format(plot_date, "%b %d, %Y"), "<br>Actual Price: ", scales::dollar(market_price))), color="#3498db", linewidth=1.5) +
-      geom_point(data=current_anchors, aes(x=plot_date, y=pred_price, 
-                                 text=paste0("Today (Anchor): ", format(plot_date, "%b %d, %Y"), "<br>Current Price: ", scales::dollar(pred_price))), color="#3498db", size=4, shape=18)
+    p <- ggplot()
       
     if("Chronos" %in% input$show_models) {
       if(nrow(d$chronos) > 0) {
@@ -564,6 +612,12 @@ server <- function(input, output, session) {
       }
     }
     
+    p <- p + 
+      geom_line(data=z_hist, aes(x=plot_date, y=market_price, group=cardname, 
+                                 text=paste0("Date: ", format(plot_date, "%b %d, %Y"), "<br>Actual Price: ", scales::dollar(market_price))), color="#3498db", linewidth=1.5) +
+      geom_point(data=current_anchors, aes(x=plot_date, y=pred_price, 
+                                 text=paste0("Today (Anchor): ", format(plot_date, "%b %d, %Y"), "<br>Current Price: ", scales::dollar(pred_price))), color="#3498db", size=4, shape=18)
+    
     p_ly <- ggplotly(p + my_dark_theme() + labs(x="Date", y="Market Price"), dynamicTicks = TRUE, tooltip = "text")
     p_ly <- clean_plotly_tooltips(p_ly)
     
@@ -583,11 +637,7 @@ server <- function(input, output, session) {
     m_hist <- d$hist %>% rename(plot_date = pull_date) 
     current_anchors <- m_hist %>% filter(plot_date == latest_pull)
 
-    p <- ggplot() + 
-      geom_line(data=m_hist, aes(x=plot_date, y=market_price, group=cardname, 
-                                 text=paste0("Date: ", format(plot_date, "%b %d, %Y"), "<br>Actual Price: ", scales::dollar(market_price))), color="#3498db", linewidth=1.2) +
-      geom_point(data=current_anchors, aes(x=plot_date, y=market_price, 
-                                 text=paste0("Today (Anchor): ", format(plot_date, "%b %d, %Y"), "<br>Current Price: ", scales::dollar(market_price))), color="#3498db", size=4, shape=18)
+    p <- ggplot()
       
     if("Chronos" %in% input$show_models) {
       if(nrow(d$chronos) > 0) {
@@ -636,6 +686,12 @@ server <- function(input, output, session) {
         }
       }
     }
+    
+    p <- p + 
+      geom_line(data=m_hist, aes(x=plot_date, y=market_price, group=cardname, 
+                                 text=paste0("Date: ", format(plot_date, "%b %d, %Y"), "<br>Actual Price: ", scales::dollar(market_price))), color="#3498db", linewidth=1.2) +
+      geom_point(data=current_anchors, aes(x=plot_date, y=market_price, 
+                                 text=paste0("Today (Anchor): ", format(plot_date, "%b %d, %Y"), "<br>Current Price: ", scales::dollar(market_price))), color="#3498db", size=4, shape=18)
     
     p_ly <- ggplotly(p + my_dark_theme() + labs(x="Date", y="Market Price"), dynamicTicks = TRUE, tooltip = "text")
     p_ly <- clean_plotly_tooltips(p_ly)
