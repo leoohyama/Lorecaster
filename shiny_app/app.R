@@ -8,6 +8,9 @@ library(RPostgres)
 library(bit64) 
 library(plotly) 
 
+# --- Initialize Disk Cache (Auto-deletes files older than 4 hours) ---
+shinyOptions(cache = cachem::cache_disk("./app_cache", max_age = 4 * 60 * 60))
+
 master_dict <- read_csv("app_data/target_cards_with_epids2.csv", show_col_types = FALSE) %>%
   mutate(
     id = as.character(id), 
@@ -36,22 +39,16 @@ ui <- page_navbar(
       .navbar .nav-link:hover { opacity: 1; color: #18bc9c !important; }
       .navbar .nav-link.active { color: #18bc9c !important; font-weight: bold; opacity: 1; }
       .nav-underline .nav-link.active { color: #18bc9c !important; font-weight: bold; border-bottom: 3px solid #18bc9c !important; opacity: 1; }
-      .flip-card { width: 180px; height: 252px; perspective: 1000px; cursor: pointer; }
-      .flip-card-inner { position: relative; width: 100%; height: 100%; transition: transform 0.6s; transform-style: preserve-3d; }
-      .flip-card-inner.is-flipped { transform: rotateY(180deg); }
-      .flip-card-front, .flip-card-back { position: absolute; width: 100%; height: 100%; backface-visibility: hidden; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.6); }
-      .flip-card-front { background-color: transparent; }
-      .flip-card-front img { width: 100%; height: 100%; border-radius: 10px; object-fit: cover; }
-      .flip-card-back { background-color: #2b3e50; color: white; transform: rotateY(180deg); border: 2px solid #18bc9c; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 10px; text-align: center; }
-      .badge-custom { position: absolute; top: -10px; right: -25px; background-color: #dc3545; color: white; border-radius: 12px; padding: 4px 10px; font-weight: bold; font-size: 15px; z-index: 20; border: 2px solid #222; }
-      .badge-rank { position: absolute; top: -10px; left: -15px; background-color: #f39c12; color: white; border-radius: 50%; width: 38px; height: 38px; display: flex; justify-content: center; align-items: center; font-weight: bold; font-size: 18px; z-index: 20; border: 2px solid #222; }
-      .scrolling-wrapper { height: 850px; overflow-y: auto; overflow-x: hidden; position: relative; }
-      .scrolling-wrapper::-webkit-scrollbar { width: 8px; }
-      .scrolling-wrapper::-webkit-scrollbar-thumb { background: #18bc9c; border-radius: 4px; }
       .momentum-box { background: linear-gradient(135deg, #2b3e50, #1a252f); border-left: 5px solid #f39c12; padding: 15px; border-radius: 8px; margin-bottom: 15px; color: #ecf0f1; font-size: 15px;}
       .green-text { color: #2ecc71; font-weight: bold; }
       .red-text { color: #e74c3c; font-weight: bold; }
-      .staleness-box { background-color: #2b3e50; border-left: 5px solid #18bc9c; padding: 15px; border-radius: 5px; margin-bottom: 15px; color: #ecf0f1;}
+      
+      /* FLIP CARD LOGIC */
+      .flip-card { perspective: 1000px; cursor: pointer; }
+      .flip-card-inner { position: relative; width: 100%; height: 100%; transition: transform 0.6s; transform-style: preserve-3d; }
+      .flip-card-inner.is-flipped { transform: rotateY(180deg); }
+      .flip-card-front, .flip-card-back { position: absolute; width: 100%; height: 100%; backface-visibility: hidden; border-radius: 10px; }
+      .flip-card-back { transform: rotateY(180deg); background-color: #1a252f; border: 2px solid #18bc9c; display: flex; flex-direction: column; justify-content: flex-start; align-items: center; padding: 15px 10px; text-align: center; }
       
       /* HIJACKED NATIVE SHINY LOADER */
       .shiny-progress-container {
@@ -76,61 +73,27 @@ ui <- page_navbar(
         width: auto !important;
         position: relative !important;
       }
-      .shiny-progress .progress-message {
-        color: #18bc9c !important;
-        font-weight: bold !important;
-        font-size: 18px !important;
-        padding: 0 !important;
-      }
+      .shiny-progress .progress-message { color: #18bc9c !important; font-weight: bold !important; font-size: 18px !important; padding: 0 !important; }
       .shiny-progress::before {
-        content: '';
-        display: block;
-        border: 5px solid #34495e;
-        border-top: 5px solid #18bc9c;
-        border-radius: 50%;
-        width: 50px; height: 50px;
-        animation: spin 1s linear infinite;
-        margin: 0 auto 15px auto;
+        content: ''; display: block; border: 5px solid #34495e; border-top: 5px solid #18bc9c; border-radius: 50%;
+        width: 50px; height: 50px; animation: spin 1s linear infinite; margin: 0 auto 15px auto;
       }
       .shiny-progress .progress-detail { display: none !important; }
       @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
       
       /* THE TRUE BSLIB DROPDOWN FIX */
-      .filter-card, .filter-card .card-body {
-        overflow: visible !important;
-      }
-      .selectize-dropdown {
-        z-index: 99999 !important;
-      }
-    ")),
-    tags$script(HTML("document.addEventListener('DOMContentLoaded', function() { setInterval(function() { var ticker = document.getElementById('top10-ticker'); if (ticker && !ticker.matches(':hover')) { ticker.scrollTop += 1; if (ticker.scrollTop >= (ticker.scrollHeight / 2)) { ticker.scrollTop = 0; } } }, 30); });"))
+      .filter-card, .filter-card .card-body { overflow: visible !important; }
+      .selectize-dropdown { z-index: 99999 !important; }
+    "))
   ),
 
   nav_panel(title = "Market Overview", value = "Market Overview",
-    layout_columns(
-      col_widths = c(9, 3), 
-      div(
-        uiOutput("momentum_statement"),
-        navset_card_underline(
-          title = "Market Trends",
-          nav_panel("Active Listings (Volume)", plotlyOutput("overview_plot", height = "450px")),
-          nav_panel("Raw Float Value (Market Cap)", plotlyOutput("market_cap_plot", height = "450px"))
-        )
-      ),
-      card(card_header("Top 10 Most Active Cards"), div(id = "top10-ticker", class = "scrolling-wrapper", uiOutput("top10_gallery")))
+    div(style = "max-width: 1200px; margin: 0 auto; padding-top: 20px;",
+      uiOutput("momentum_statement")
     )
   ),
   
-  nav_panel(title = "Ebay Data", value = "Ebay Data",
-    layout_sidebar(
-      sidebar = sidebar(title = "Card Selection", uiOutput("card_selector_ui"), br(), uiOutput("sidebar_card_image")),
-      uiOutput("staleness_statement"),
-      layout_columns(col_widths = c(6, 6), card(card_header("Listing Volume"), plotlyOutput("volume_plot", height = "350px"))),
-      card(card_header("Live eBay Floor"), DTOutput("listings_table"))
-    )
-  ),
-  
-  nav_panel(title = "Pricing", value = "Pricing",
+  nav_panel(title = "ML Forecasts", value = "Pricing",
     layout_sidebar(
       sidebar = sidebar(
         title = "Card Stats", 
@@ -262,46 +225,23 @@ server <- function(input, output, session) {
     updateSelectizeInput(session, "pricing_selected_card", choices = choices, selected = choices[1], server = TRUE)
   })
 
-  summary_data <- eventReactive(input$refresh_db, ignoreNULL = FALSE, {
+  # --- CACHED REACTIVE: General Summary Data (Lean Version) ---
+  summary_data <- reactive({
     withProgress(message = 'Crunching Market Summaries...', value = 0.5, {
       con <- get_neon_con()
-      vol_hist <- dbGetQuery(con, "SELECT date_pulled, is_graded, count(*) as n FROM lorcana_active_listings GROUP BY date_pulled, is_graded")
-      
-      df_cap_raw <- dbGetQuery(con, "
-        SELECT id, date_pulled, COUNT(*) as qty 
-        FROM lorcana_active_listings 
-        WHERE is_graded IN ('No', 'false', '0') 
-        GROUP BY id, date_pulled
-      ")
       
       latest_prices <- dbGetQuery(con, "SELECT DISTINCT ON (tcgplayer_id) tcgplayer_id, market_price, pull_date FROM justtcg_prices ORDER BY tcgplayer_id, pull_date DESC")
       past_prices <- dbGetQuery(con, "SELECT DISTINCT ON (tcgplayer_id) tcgplayer_id, market_price, pull_date FROM justtcg_prices WHERE pull_date <= CURRENT_DATE - INTERVAL '7 days' ORDER BY tcgplayer_id, pull_date DESC")
       past_30_prices <- dbGetQuery(con, "SELECT DISTINCT ON (tcgplayer_id) tcgplayer_id, market_price as price_30d_ago, pull_date FROM justtcg_prices WHERE pull_date <= CURRENT_DATE - INTERVAL '30 days' ORDER BY tcgplayer_id, pull_date DESC")
-      top_10_snap <- dbGetQuery(con, sprintf("SELECT id, count(*) as total FROM lorcana_active_listings WHERE date_pulled = '%s' GROUP BY id ORDER BY total DESC LIMIT 10", max(vol_hist$date_pulled)))
       dbDisconnect(con)
-      
-      cap_hist <- df_cap_raw %>% 
-        mutate(date_pulled = force_pure_date(date_pulled), id = as.character(id)) %>% 
-        left_join(master_dict, by = "id") %>% 
-        left_join(latest_prices, by = "tcgplayer_id") %>% 
-        group_by(date_pulled) %>% 
-        summarise(total_cap = sum(market_price * qty, na.rm = TRUE), .groups = 'drop')
         
-      list(vol = vol_hist, cap = cap_hist, latest = latest_prices, past = past_prices, past_30 = past_30_prices, top10 = top_10_snap)
+      list(latest = latest_prices, past = past_prices, past_30 = past_30_prices)
     })
-  })
+  }) %>% 
+  bindCache(Sys.Date()) %>% 
+  bindEvent(input$refresh_db, ignoreNULL = FALSE)
 
-  card_details <- reactive({
-    req(input$selected_card)
-    id_char <- master_dict$id[master_dict$cardname == input$selected_card][1]
-    withProgress(message = "Pulling Listing Details...", {
-      con <- get_neon_con()
-      df <- dbGetQuery(con, sprintf("SELECT listing_title, price_val, is_graded, date_pulled, posted_date, item_id, listing_type FROM lorcana_active_listings WHERE id = '%s'", id_char))
-      dbDisconnect(con)
-      df %>% mutate(date_pulled = force_pure_date(date_pulled))
-    })
-  })
-
+  # --- CACHED REACTIVE: Heavy Pricing & ML Forecast Data ---
   pricing_details <- reactive({
     req(input$pricing_selected_card)
     ids <- master_dict$tcgplayer_id[master_dict$cardname == input$pricing_selected_card]
@@ -336,9 +276,10 @@ server <- function(input, output, session) {
 
       list(hist = hist, chronos = chronos_cur, chronos_shadow = chronos_shadow, gru = gru_cur, gru_shadow = gru_shadow, metrics = metrics)
     })
-  })
+  }) %>% bindCache(input$pricing_selected_card)
 
-  ml_diag_data <- eventReactive(input$calc_diagnostics, ignoreNULL = FALSE, {
+  # --- CACHED REACTIVE: Deep Dive Unified Data ---
+  ml_diag_data <- reactive({
     withProgress(message = 'Crunching Global Unified Data...', value = 0.5, {
       con <- get_neon_con()
       
@@ -419,7 +360,9 @@ server <- function(input, output, session) {
         
       list(set_data = set_summary, card_data = card_table_df)
     })
-  })
+  }) %>% 
+  bindCache(Sys.Date()) %>% 
+  bindEvent(input$calc_diagnostics, ignoreNULL = FALSE)
   
   output$set_diagnostics_table <- renderDT({
     df <- ml_diag_data()$set_data
@@ -459,64 +402,131 @@ server <- function(input, output, session) {
     bind_rows(top_pct_g, top_pct_l, top_abs_g, top_abs_l)
   })
 
-  output$overview_plot <- renderPlotly({
-    req(summary_data())
-    p <- summary_data()$vol %>% mutate(date_pulled = force_pure_date(date_pulled)) %>% ggplot(aes(x = date_pulled, y = n, color = is_graded)) + geom_line(linewidth = 1.2) + geom_point(size = 3) + my_dark_theme() + labs(y = "Active Listings", x = "Date")
-    ggplotly(p, tooltip = "y") %>% style(hovertemplate = "%{y}<extra></extra>") %>% layout(hovermode = "x unified", legend = list(orientation = "h", x = 0.5, y = -0.2, xanchor = "center")) %>% config(displayModeBar = FALSE)
+  # --- Unified Database Pull for the 4 Sparklines ---
+  market_movers_hist <- reactive({
+    info <- market_movers(); req(info)
+    con <- get_neon_con()
+    id_list <- paste(unique(info$tcgplayer_id), collapse=",")
+    hist_data <- dbGetQuery(con, sprintf("SELECT tcgplayer_id, pull_date, market_price FROM justtcg_prices WHERE tcgplayer_id IN (%s) AND pull_date >= CURRENT_DATE - INTERVAL '7 days'", id_list))
+    dbDisconnect(con)
+    hist_data %>% mutate(pull_date = force_pure_date(pull_date))
   })
 
-  output$market_cap_plot <- renderPlotly({
-    req(summary_data())
-    p <- summary_data()$cap %>% mutate(date_pulled = force_pure_date(date_pulled)) %>% ggplot(aes(x = date_pulled, y = total_cap)) + geom_area(fill = "#18bc9c", alpha = 0.3) + geom_line(color = "#18bc9c", linewidth = 1.5) + my_dark_theme() + labs(y = "Raw Float Value", x = "Date")
-    ggplotly(p, tooltip = "y") %>% style(hovertemplate = "%{y:$,.2f}<extra></extra>") %>% layout(hovermode = "x unified", yaxis = list(tickprefix = "$")) %>% config(displayModeBar = FALSE)
+  # --- Sparkline Build Function (FIXED: Added hovermode = "closest") ---
+  build_sparkline <- function(h_data, cat_name) {
+    if(nrow(h_data) == 0) return(plotly_empty(type = "scatter", mode = "lines"))
+    
+    h_data <- h_data %>% arrange(pull_date)
+    line_color <- ifelse(grepl("Gainer", cat_name), "#2ecc71", "#e74c3c")
+    
+    p <- ggplot(h_data, aes(x = pull_date, y = market_price, group = 1, text = paste0(format(pull_date, "%m/%d"), "<br>", scales::dollar(market_price)))) +
+      geom_line(color = line_color, linewidth = 1.5) +
+      geom_point(color = line_color, size = 3) +
+      my_dark_theme() +
+      theme(
+        axis.text = element_blank(), axis.title = element_blank(), axis.ticks = element_blank(),
+        panel.grid = element_blank(), plot.margin = margin(0,0,0,0)
+      )
+      
+    ggplotly(p, tooltip = "text") %>%
+      style(hovertemplate = "%{text}<extra></extra>") %>%
+      layout(
+        xaxis = list(visible = FALSE, fixedrange = TRUE),
+        yaxis = list(visible = FALSE, fixedrange = TRUE),
+        margin = list(t=10, b=10, l=10, r=10),
+        hovermode = "closest",
+        showlegend = FALSE,
+        plot_bgcolor = "rgba(0,0,0,0)",
+        paper_bgcolor = "rgba(0,0,0,0)"
+      ) %>% config(displayModeBar = FALSE)
+  }
+
+  output$spark_pct_g <- renderPlotly({
+    info <- market_movers(); req(info)
+    hist <- market_movers_hist(); req(hist)
+    row <- info %>% filter(Category == "Top % Gainer")
+    h <- hist %>% filter(tcgplayer_id == row$tcgplayer_id)
+    build_sparkline(h, "Top % Gainer")
+  })
+
+  output$spark_pct_l <- renderPlotly({
+    info <- market_movers(); req(info)
+    hist <- market_movers_hist(); req(hist)
+    row <- info %>% filter(Category == "Top % Loser")
+    h <- hist %>% filter(tcgplayer_id == row$tcgplayer_id)
+    build_sparkline(h, "Top % Loser")
+  })
+
+  output$spark_abs_g <- renderPlotly({
+    info <- market_movers(); req(info)
+    hist <- market_movers_hist(); req(hist)
+    row <- info %>% filter(Category == "Top $ Gainer")
+    h <- hist %>% filter(tcgplayer_id == row$tcgplayer_id)
+    build_sparkline(h, "Top $ Gainer")
+  })
+
+  output$spark_abs_l <- renderPlotly({
+    info <- market_movers(); req(info)
+    hist <- market_movers_hist(); req(hist)
+    row <- info %>% filter(Category == "Top $ Loser")
+    h <- hist %>% filter(tcgplayer_id == row$tcgplayer_id)
+    build_sparkline(h, "Top $ Loser")
   })
 
   output$momentum_statement <- renderUI({
     info <- market_movers(); req(info)
-    t_pct_g <- info %>% filter(Category == "Top % Gainer") %>% slice(1); t_pct_l <- info %>% filter(Category == "Top % Loser") %>% slice(1); t_abs_g <- info %>% filter(Category == "Top $ Gainer") %>% slice(1); t_abs_l <- info %>% filter(Category == "Top $ Loser") %>% slice(1)
-    build_mover_card <- function(row, lab) {
-      p_c <- ifelse(row$pct >= 0, "green-text", "red-text")
-      tags$div(style = "display: flex; flex-direction: column; align-items: center; width: 180px; text-align: center; margin: 10px;", tags$div(style = "font-size: 14px; font-weight: bold; color: #18bc9c; text-transform: uppercase; margin-bottom: 5px;", lab), tags$img(src = paste0("card_photos/", row$folder_name, "/", row$id, ".avif"), style = "width: 100%; border-radius: 8px; border: 2px solid #2b3e50; box-shadow: 0 4px 8px rgba(0,0,0,0.5);"), tags$div(style = "margin-top: 8px; font-size: 14px; font-weight: bold; color: #ecf0f1; height: 35px; line-height: 1.2;", row$cardname), tags$div(class = p_c, style = "font-size: 16px; font-weight: bold;", sprintf("%s%s (%.1f%%)", ifelse(row$abs >= 0, "+", ""), scales::dollar(row$abs), row$pct)))
-    }
-    tagList(div(class="momentum-box", tags$span("7-Day Market Momentum: "), sprintf("The biggest jump was %s (+%.1f%%).", t_pct_g$cardname, t_pct_g$pct)), tags$div(style = "display: flex; justify-content: space-around; background: #1a252f; padding: 10px; border-radius: 8px 8px 0 0;", build_mover_card(t_pct_g, "Top % Gainer"), build_mover_card(t_pct_l, "Top % Loser"), build_mover_card(t_abs_g, "Top $ Gainer"), build_mover_card(t_abs_l, "Top $ Loser")), tags$div(style = "background: #1a252f; border-radius: 0 0 8px 8px; padding-bottom: 10px; margin-bottom: 20px;", plotlyOutput("movers_plot", height = "150px")))
-  })
-
-  output$movers_plot <- renderPlotly({
-    info <- market_movers(); req(info)
-    con <- get_neon_con(); id_list <- paste(unique(info$tcgplayer_id), collapse=","); hist_data <- dbGetQuery(con, sprintf("SELECT tcgplayer_id, pull_date, market_price FROM justtcg_prices WHERE tcgplayer_id IN (%s) AND pull_date >= CURRENT_DATE - INTERVAL '7 days'", id_list)); dbDisconnect(con)
-    hist_data <- hist_data %>% mutate(pull_date = force_pure_date(pull_date))
-    plot_data <- info %>% select(tcgplayer_id, Category) %>% left_join(hist_data, by = "tcgplayer_id") %>% mutate(Category = factor(Category, levels = c("Top % Gainer", "Top % Loser", "Top $ Gainer", "Top $ Loser")))
-    p <- ggplot(plot_data, aes(x = pull_date, y = market_price, color = Category)) + geom_line(linewidth = 1.2) + facet_wrap(~Category, scales = "free_y", nrow = 1) + scale_color_manual(values = c("Top % Gainer" = "#2ecc71", "Top % Loser" = "#e74c3c", "Top $ Gainer" = "#2ecc71", "Top $ Loser" = "#e74c3c")) + my_dark_theme() + theme(axis.text.y = element_blank(), axis.title.y = element_blank(), axis.ticks.y = element_blank(), axis.text.x = element_text(size = 14), strip.text = element_blank(), panel.grid = element_blank()) + labs(x = NULL)
-    ggplotly(p, tooltip = "y") %>% style(hovertemplate = "%{y:$.2f}<extra></extra>") %>% layout(hovermode = "x unified", yaxis = list(tickprefix = "$"), showlegend = FALSE) %>% config(displayModeBar = FALSE)
-  })
-
-  output$top10_gallery <- renderUI({
     req(summary_data())
-    latest_prices <- summary_data()$latest
-    top10 <- summary_data()$top10 %>% left_join(master_dict, by = "id") %>% left_join(latest_prices, by = "tcgplayer_id") %>% mutate(rank = row_number())
-    cards <- purrr::map(1:nrow(top10), function(i) {
-      row <- top10[i,]; img <- paste0("card_photos/", row$folder_name, "/", row$id, ".avif"); formatted_price <- ifelse(is.na(row$market_price), "N/A", scales::dollar(row$market_price))
-      tags$div(style = "position: relative; display: flex; flex-direction: column; align-items: center; margin-bottom: 35px; margin-top: 15px;", tags$div(class = "flip-card", onclick = "this.querySelector('.flip-card-inner').classList.toggle('is-flipped');", tags$div(class = "flip-card-inner", tags$div(class = "flip-card-front", tags$img(src = img), tags$div(class = "badge-rank", paste0("#", row$rank)), tags$div(class = "badge-custom", paste(row$total, "listings"))), tags$div(class = "flip-card-back", tags$span(style = "border-bottom: 1px solid #18bc9c; padding-bottom: 5px;", "Card Stats"), tags$div(style = "font-size: 14px; margin-top: 5px;", tags$span("Set:"), tags$br(), row$set_name), tags$div(style = "font-size: 14px; margin-top: 10px;", tags$span("Market Price:"), tags$br(), tags$span(style = "color: #f39c12; font-size: 18px;", formatted_price)), tags$div(style = "font-size: 16px; margin-top: 10px; color: #18bc9c;", paste("Vol:", row$total))))), tags$div(style = "margin-top: 15px; font-size: 15px; color: #bbb; max-width: 200px; text-align: center;", row$cardname), tags$div(style = "margin-top: 4px; font-size: 16px; color: #f39c12;", formatted_price))
-    })
-    div(style="display: flex; flex-direction: column;", cards, cards)
-  })
-
-  output$card_selector_ui <- renderUI({ selectInput("selected_card", "Select Card:", choices = sort(unique(master_dict$cardname))) })
-  output$sidebar_card_image <- renderUI({ req(input$selected_card); info <- master_dict %>% filter(cardname == input$selected_card) %>% slice(1); tags$img(src=paste0("card_photos/", info$folder_name, "/", info$id, ".avif"), style="width:100%; border-radius:10px;") })
-  output$volume_plot <- renderPlotly({ req(card_details()); p <- card_details() %>% group_by(date_pulled, is_graded) %>% summarise(n=n(), .groups='drop') %>% ggplot(aes(x=date_pulled, y=n, color=is_graded)) + geom_line(linewidth=1.5) + geom_point(size=3) + my_dark_theme() + labs(y="Active Listings", x="Date", color="Graded?"); ggplotly(p, tooltip = c("color", "y")) %>% layout(hovermode = "x unified", legend = list(orientation = "h", x = 0.5, y = -0.2, xanchor = "center")) %>% config(displayModeBar = FALSE) })
-  
-  output$staleness_statement <- renderUI({ 
-    req(card_details())
-    lat <- max(card_details()$date_pulled)
-    curr <- card_details() %>% filter(date_pulled == lat)
-    div(class="staleness-box", 
-        tags$span(input$selected_card), 
-        sprintf(" has %d active listings as of %s.", nrow(curr), format(lat, "%B %d"))
+    
+    max_d <- max(summary_data()$latest$pull_date, na.rm=TRUE)
+    min_d <- max_d - 7
+    date_str <- paste0(format(min_d, "%m/%d"), " - ", format(max_d, "%m/%d"))
+    
+    t_pct_g <- info %>% filter(Category == "Top % Gainer") %>% slice(1)
+    t_pct_l <- info %>% filter(Category == "Top % Loser") %>% slice(1)
+    t_abs_g <- info %>% filter(Category == "Top $ Gainer") %>% slice(1)
+    t_abs_l <- info %>% filter(Category == "Top $ Loser") %>% slice(1)
+    
+    build_mover_card <- function(row, lab, plot_id) {
+      p_c <- ifelse(row$pct >= 0, "green-text", "red-text")
+      
+      front <- tags$div(class = "flip-card-front", style = "background-color: #2b3e50; border: 2px solid #34495e; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 15px 10px;",
+        tags$div(style = "font-size: 15px; font-weight: bold; color: #18bc9c; text-transform: uppercase; margin-bottom: 10px;", lab),
+        tags$img(src = paste0("card_photos/", row$folder_name, "/", row$id, ".avif"), style = "height: 180px; border-radius: 5px; box-shadow: 0 4px 8px rgba(0,0,0,0.5);"),
+        tags$div(style = "margin-top: 12px; font-size: 14px; font-weight: bold; color: #ecf0f1; height: 36px; line-height: 1.2;", row$cardname),
+        tags$div(style = "margin-top: 8px; font-size: 16px; font-weight: bold; color: #f1c40f;", scales::dollar(row$market_price_cur)),
+        tags$div(class = p_c, style = "font-size: 15px; font-weight: bold; margin-top: 2px;", sprintf("%s%s (%.1f%%)", ifelse(row$abs >= 0, "+", ""), scales::dollar(row$abs), row$pct))
+      )
+      
+      back <- tags$div(class = "flip-card-back",
+        tags$span(style = "border-bottom: 1px solid #18bc9c; padding-bottom: 5px; margin-bottom: 10px; font-weight: bold; font-size: 18px;", lab),
+        tags$span(style = "font-size: 14px; color: #bbb;", "Current Price"),
+        tags$span(style = "font-size: 26px; font-weight: bold; color: #f1c40f; margin-bottom: 10px;", scales::dollar(row$market_price_cur)),
+        tags$div(style = "flex-grow: 1; display: flex; align-items: center; justify-content: center; width: 100%;",
+          plotlyOutput(plot_id, width = "220px", height = "160px")
+        )
+      )
+      
+      tags$div(style = "display: flex; flex-direction: column; align-items: center; width: 260px; text-align: center; margin: 10px;",
+        tags$div(class = "flip-card", onclick = "this.querySelector('.flip-card-inner').classList.toggle('is-flipped');", style = "width: 260px; height: 400px;",
+          tags$div(class = "flip-card-inner", front, back)
+        )
+      )
+    }
+    
+    tagList(
+      div(class="momentum-box", 
+          tags$span(sprintf("7-Day Market Momentum (%s): ", date_str)), 
+          sprintf("The biggest jump was %s (+%.1f%%).", t_pct_g$cardname, t_pct_g$pct)
+      ), 
+      tags$div(style = "display: flex; justify-content: space-around; background: #1a252f; padding: 20px 10px; border-radius: 8px; margin-bottom: 20px;", 
+        build_mover_card(t_pct_g, "Top % Gainer", "spark_pct_g"), 
+        build_mover_card(t_pct_l, "Top % Loser", "spark_pct_l"), 
+        build_mover_card(t_abs_g, "Top $ Gainer", "spark_abs_g"), 
+        build_mover_card(t_abs_l, "Top $ Loser", "spark_abs_l")
+      )
     )
   })
-  
-  output$listings_table <- renderDT({ req(card_details()); card_details() %>% filter(date_pulled == max(date_pulled)) %>% arrange(price_val) %>% select(Title = listing_title, Price = price_val, `Graded?` = is_graded, `Type` = listing_type) %>% datatable(options=list(pageLength=10, dom='tp'), rownames=FALSE) %>% formatCurrency("Price") })
-  
+
   output$sidebar_pricing_image <- renderUI({ 
     req(input$pricing_selected_card, pricing_details())
     info <- master_dict %>% filter(cardname == input$pricing_selected_card) %>% slice(1)
