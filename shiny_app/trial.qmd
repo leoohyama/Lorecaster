@@ -503,6 +503,13 @@ dd_table_and_modal = {
   `;
   document.body.appendChild(modal);
 
+  // Allow clicking outside the modal content to close it
+  modal.addEventListener("click", (e) => {
+    if (e.target === modal) {
+      modal.style.display = "none";
+    }
+  });
+
   // Setup Page Wrapper
   const page_wrapper = document.createElement("div");
   page_wrapper.style.width = "100%";
