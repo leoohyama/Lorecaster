@@ -224,144 +224,7 @@ market_overview_node = {
 }
 ```
 
-# ML Forecasts
-
-## Sidebar {.sidebar}
-```{ojs}
-safe_default_card = Array.isArray(ojs_default_card) ? ojs_default_card[0] : ojs_default_card;
-
-viewof selected_card = Inputs.select(ojs_cards, { value: safe_default_card, label: "Select a Card:" })
-viewof show_ci = Inputs.toggle({label: "Show Confidence Interval", value: false})
-```
-
-```{ojs}
-//| output: false
-my_hist = transpose(ojs_hist)
-  .filter(d => d.cardname === selected_card)
-  .map(d => ({ ...d, date: new Date(d.date) }))
-  .sort((a, b) => a.date - b.date)
-
-my_fcst = transpose(ojs_forecast)
-  .filter(d => d.cardname === selected_card)
-  .map(d => ({ ...d, date: new Date(d.date) }))
-  .sort((a, b) => a.date - b.date)
-
-live_fcst = my_fcst.filter(d => d.is_shadow === false)
-shadow_fcst = my_fcst.filter(d => d.is_shadow === true)
-my_info = transpose(ojs_info).find(d => d.cardname === selected_card) || {}
-current_price = my_hist.length > 0 ? my_hist[my_hist.length - 1].price : 0
-
-thirty_days_ago = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
-thirty_days_future = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
-
-// BRIDGE THE GAP: Connect the end of history to the start of the forecast
-last_hist_pt = my_hist.length > 0 ? my_hist[my_hist.length - 1] : null;
-link_c = last_hist_pt ? { date: last_hist_pt.date, price: last_hist_pt.price, model: "Chronos", conf_low: last_hist_pt.price, conf_high: last_hist_pt.price } : null;
-link_g = last_hist_pt ? { date: last_hist_pt.date, price: last_hist_pt.price, model: "GRU" } : null;
-
-micro_hist = my_hist.filter(d => d.date >= thirty_days_ago && d.date <= thirty_days_future)
-micro_live_c = live_fcst.filter(d => d.model === "Chronos" && d.date >= thirty_days_ago && d.date <= thirty_days_future)
-micro_live_g = live_fcst.filter(d => d.model === "GRU" && d.date >= thirty_days_ago && d.date <= thirty_days_future)
-micro_shadow = shadow_fcst.filter(d => d.date >= thirty_days_ago && d.date <= thirty_days_future)
-
-micro_live_c_conn = link_c ? [link_c, ...micro_live_c] : micro_live_c;
-micro_live_g_conn = link_g ? [link_g, ...micro_live_g] : micro_live_g;
-live_fcst_conn = [...(link_c ? [link_c] : []), ...(link_g ? [link_g] : []), ...live_fcst];
-
-c_val_obj = my_fcst.filter(d => d.model === "Chronos" && d.is_shadow === false).slice(-1)[0]
-g_val_obj = my_fcst.filter(d => d.model === "GRU" && d.is_shadow === false).slice(-1)[0]
-c_val = c_val_obj ? c_val_obj.price : null
-g_val = g_val_obj ? g_val_obj.price : null
-ensemble_val = (c_val && g_val) ? (c_val + g_val) / 2 : (c_val || g_val || 0)
-trend_pct = current_price ? ((ensemble_val - current_price) / current_price) : 0
-trend_color = trend_pct >= 0 ? "#2ecc71" : "#e74c3c"
-trend_icon = trend_pct >= 0 ? "▲" : "▼"
-```
-
-```{ojs}
-// Rendered HTML Sidebar Info
-html`
-<div style="background: #1a252f; border-radius: 8px; padding: 15px; border: 1px solid #34495e; text-align: center; margin-top: 10px;">
-  <img src="${my_info.image_path}" style="width:100%; max-width: 250px; border-radius:8px; box-shadow: 0 4px 8px rgba(0,0,0,0.8); margin-bottom: 15px;">
-  <div style="font-size:14px; color:#ecf0f1; margin-bottom: 8px; border-bottom: 1px solid #18bc9c; padding-bottom: 4px;">${my_info.cardname}</div>
-  <div style="font-size: 24px; font-weight: bold; color: #3498db; margin-bottom: 15px;">$${current_price.toFixed(2)}</div>
-  
-  <div style="font-size: 13px; color: #18bc9c; margin-top: 5px; border-bottom: 1px solid #34495e; padding-bottom: 2px; text-align: left;">30-Day Metrics</div>
-  <div style="font-size: 13px; color: #bbb; line-height: 1.6; padding-top: 5px; text-align: left;">
-    <div style="display: flex; justify-content: space-between;"><span style="color:#f39c12;">Entropy: </span> ${my_info.samp_ent_30d ? my_info.samp_ent_30d.toFixed(3) : "N/A"}</div>
-    <div style="display: flex; justify-content: space-between;"><span style="color:#f39c12;">Hurst: </span> ${my_info.hurst_30d ? my_info.hurst_30d.toFixed(3) : "N/A"}</div>
-    <div style="display: flex; justify-content: space-between;"><span style="color:#f39c12;">Vol (CV): </span> ${my_info.cv_30d ? my_info.cv_30d.toFixed(3) : "N/A"}</div>
-    <div style="display: flex; justify-content: space-between;"><span style="color:#f39c12;">Skew: </span> ${my_info.skewness_30d ? my_info.skewness_30d.toFixed(3) : "N/A"}</div>
-  </div>
-</div>
-`
-```
-
-## Column
-
-```{ojs}
-//| title: "30-Day ML Ensemble Forecast Outlook"
-html`
-<div style="display: flex; justify-content: space-around; align-items: center; padding: 12px 15px; margin-bottom: 5px;">
-  <div style="text-align: center;">
-    <span style="color: #bbb; font-size: 12px; text-transform: uppercase; letter-spacing: 1px;">Current</span><br>
-    <span style="color: #3498db; font-size: 24px; font-weight: bold;">$${current_price.toFixed(2)}</span>
-  </div>
-  <div style="text-align: center;">
-    <span style="color: #bbb; font-size: 12px; text-transform: uppercase; letter-spacing: 1px;">Chronos (30D)</span><br>
-    <span style="color: #f1c40f; font-size: 24px; font-weight: bold;">$${c_val ? c_val.toFixed(2) : "N/A"}</span>
-  </div>
-  <div style="text-align: center;">
-    <span style="color: #bbb; font-size: 12px; text-transform: uppercase; letter-spacing: 1px;">GRU (30D)</span><br>
-    <span style="color: #2ecc71; font-size: 24px; font-weight: bold;">$${g_val ? g_val.toFixed(2) : "N/A"}</span>
-  </div>
-  <div style="text-align: center;">
-    <span style="color: #bbb; font-size: 12px; text-transform: uppercase; letter-spacing: 1px;">Ensemble (30D)</span><br>
-    <span style="color: ${trend_color}; font-size: 24px; font-weight: bold;">$${ensemble_val.toFixed(2)}</span>
-    <span style="color: ${trend_color}; font-size: 14px; margin-left: 6px;">${trend_icon} ${(Math.abs(trend_pct)*100).toFixed(1)}%</span>
-  </div>
-</div>
-`
-```
-
-```{ojs}
-//| title: "Micro View: 30-Day History & Backtest Shadows"
-Plot.plot({
-  height: 350,
-  style: { background: "#1a252f", color: "#ecf0f1", fontSize: "14px" },
-  marginLeft: 75, marginRight: 40, marginTop: 20, marginBottom: 40, grid: true,
-  x: { type: "time", label: "Date" }, 
-  y: { tickFormat: "$.2f", label: "Market Price", ticks: 6 },
-  marks: [
-    Plot.lineY(micro_shadow, { x: "date", y: "price", stroke: d => d.model === "Chronos" ? "#f1c40f" : "#2ecc71", z: "run_id", strokeOpacity: 0.2, strokeWidth: 1 }),
-    show_ci ? Plot.areaY(micro_live_c_conn, { x: "date", y1: "conf_low", y2: "conf_high", fill: "#f1c40f", fillOpacity: 0.15 }) : null,
-    Plot.lineY(micro_live_c_conn, { x: "date", y: "price", stroke: "#f1c40f", strokeWidth: 3, strokeDasharray: "6 4", tip: true }),
-    Plot.lineY(micro_live_g_conn, { x: "date", y: "price", stroke: "#2ecc71", strokeWidth: 3, strokeDasharray: "2 2", tip: true }),
-    Plot.lineY(micro_hist, { x: "date", y: "price", stroke: "#3498db", strokeWidth: 3, tip: true }),
-    Plot.dot(micro_hist, Plot.selectLast({ x: "date", y: "price", fill: "#3498db", r: 5 }))
-  ]
-})
-```
-
-```{ojs}
-//| title: "Macro View: All-Time History & Long Term Forecast"
-Plot.plot({
-  height: 350,
-  style: { background: "#1a252f", color: "#ecf0f1", fontSize: "14px" },
-  marginLeft: 75, marginRight: 40, marginTop: 20, marginBottom: 40, grid: true,
-  x: { type: "time", label: "Date" },
-  y: { tickFormat: "$.2f", label: "Market Price", ticks: 6 },
-  color: { domain: ["Chronos", "GRU"], range: ["#f1c40f", "#2ecc71"] },
-  marks: [
-    show_ci ? Plot.areaY(live_fcst_conn.filter(d => d.model === "Chronos"), { x: "date", y1: "conf_low", y2: "conf_high", fill: "#f1c40f", fillOpacity: 0.15 }) : null,
-    Plot.lineY(live_fcst_conn, { x: "date", y: "price", stroke: "model", strokeWidth: 2.5, strokeDasharray: d => d.model === "Chronos" ? "4 4" : "2 2", tip: true }),
-    Plot.lineY(my_hist, { x: "date", y: "price", stroke: "#3498db", strokeWidth: 2.5, tip: true }),
-    Plot.dot(my_hist, Plot.selectLast({ x: "date", y: "price", fill: "#3498db", r: 5 }))
-  ]
-})
-```
-
-# ML Deeper Dive {orientation="rows"}
+# Price Forecasts {orientation="rows"}
 
 <style>
   .hover-table { width: 100%; border-collapse: collapse; color: #ecf0f1; font-size: 14px; text-align: left; }
@@ -675,6 +538,10 @@ dd_table_and_modal = {
       const cardname = tr.dataset.cardname;
       const price = parseFloat(tr.dataset.price);
 
+      // Locate Image Path dynamically
+      const card_info = raw_data.find(d => d.cardname === cardname);
+      const img_src = card_info ? card_info.image_path : '';
+
       // Extract FULL history to compute accurate backtests without the 30-day cutoff
       const full_c_hist = all_hist.filter(d => d.cardname === cardname).sort((a,b)=>a.date-b.date);
       const full_c_fcst = all_fcst.filter(d => d.cardname === cardname).sort((a,b)=>a.date-b.date);
@@ -683,21 +550,31 @@ dd_table_and_modal = {
       const c_hist = full_c_hist.filter(d => d.date >= t_ago && d.date <= t_fut);
       const c_fcst = full_c_fcst.filter(d => d.date >= t_ago && d.date <= t_fut);
 
+      // Extract Predicted Prices
       const c_val_obj = c_fcst.filter(d => d.model === "Chronos" && d.is_shadow === false).slice(-1)[0];
       const g_val_obj = c_fcst.filter(d => d.model === "GRU" && d.is_shadow === false).slice(-1)[0];
       const c_val = c_val_obj ? c_val_obj.price : null;
       const g_val = g_val_obj ? g_val_obj.price : null;
+      const c_text = c_val ? "$" + c_val.toFixed(2) : "N/A";
+      const g_text = g_val ? "$" + g_val.toFixed(2) : "N/A";
 
+      // Update Modal Header with Forecasts & Image
       document.getElementById('modal-header').innerHTML = `
         <div style="display: flex; justify-content: space-between; align-items: center; padding-right: 30px;">
-          <div style="font-size: 20px; font-weight: bold; color: #3498db;">
-            ${cardname} <span style='color:#ecf0f1; font-weight:normal; font-size:16px;'>| Current: $${price.toFixed(2)}</span>
+          
+          <div style="display: flex; align-items: center; gap: 20px;">
+            <img src="${img_src}" style="height: 180px; border-radius: 6px; box-shadow: 0 4px 8px rgba(0,0,0,0.5);">
+            <div>
+              <div style="font-size: 22px; font-weight: bold; color: #3498db; margin-bottom: 5px;">${cardname}</div>
+              <div style="font-size: 16px; color: #ecf0f1;">Current Price: <span style="font-weight:bold; color:#f1c40f;">$${price.toFixed(2)}</span></div>
+            </div>
           </div>
-          <div style="font-size: 16px; font-weight: normal; background: #1a252f; padding: 5px 15px; border-radius: 6px;">
+
+          <div style="font-size: 16px; font-weight: normal; background: #1a252f; padding: 10px 20px; border-radius: 6px; border: 1px solid #34495e;">
             <span style='color: #bbb; text-transform: uppercase; font-size: 12px;'>Chronos (30D):</span> 
-            <span style='color: #f1c40f; font-weight: bold; margin-right: 15px;'>${c_val ? "$" + c_val.toFixed(2) : "N/A"}</span>
+            <span style='color: #f1c40f; font-weight: bold; margin-right: 20px;'>${c_text}</span>
             <span style='color: #bbb; text-transform: uppercase; font-size: 12px;'>GRU (30D):</span> 
-            <span style='color: #2ecc71; font-weight: bold;'>${g_val ? "$" + g_val.toFixed(2) : "N/A"}</span>
+            <span style='color: #2ecc71; font-weight: bold;'>${g_text}</span>
           </div>
         </div>
       `;
@@ -738,10 +615,10 @@ dd_table_and_modal = {
       };
 
       // ----------------------------------------------------
-      // PLOT 2: ERROR HORIZON GRAPH ENGINE (Matches Shiny R Logic)
+      // PLOT 2: ERROR HORIZON GRAPH ENGINE (Fixed OJS Hoisting Bug)
       // ----------------------------------------------------
-      function build_error(model_name) {
-         const shadow_data = full_c_fcst.filter(d => d.model === model_name && d.is_shadow);
+      const build_error = (model_name, fcst_data, hist_data) => {
+         const shadow_data = fcst_data.filter(d => d.model === model_name && d.is_shadow);
          const runs = [...new Set(shadow_data.map(d => d.run_id))];
          let error_records = [];
          
@@ -749,13 +626,12 @@ dd_table_and_modal = {
             let run_pts = shadow_data.filter(d => d.run_id === rid).sort((a,b) => a.date - b.date);
             if(run_pts.length === 0) return;
             
-            // Anchor date is the last known historical price prior to the run starting
             let first_date = run_pts[0].date.getTime();
-            let anchor_pt = full_c_hist.filter(h => h.date.getTime() < first_date).sort((a,b) => b.date - a.date)[0];
+            let anchor_pt = hist_data.filter(h => h.date.getTime() < first_date).sort((a,b) => b.date - a.date)[0];
             let anchor_price = anchor_pt ? anchor_pt.price : null;
             
             run_pts.forEach((pt, idx) => {
-               let actual_pt = full_c_hist.find(h => h.date.getTime() === pt.date.getTime());
+               let actual_pt = hist_data.find(h => h.date.getTime() === pt.date.getTime());
                if(actual_pt && anchor_price > 0 && actual_pt.price > 0) {
                   error_records.push({
                      horizon: idx + 1,
@@ -778,10 +654,10 @@ dd_table_and_modal = {
             }
          }
          return agg;
-      }
+      };
 
-      let err_c = build_error("Chronos");
-      let err_g = build_error("GRU");
+      let err_c = build_error("Chronos", full_c_fcst, full_c_hist);
+      let err_g = build_error("GRU", full_c_fcst, full_c_hist);
 
       const trace_base = {
         x: err_c.map(d => d.horizon),
@@ -837,4 +713,97 @@ dd_table_and_modal = {
   renderTable();
   return page_wrapper; 
 }
+```
+
+# Long-term Trends
+
+## Sidebar {.sidebar}
+```{ojs}
+safe_default_card = Array.isArray(ojs_default_card) ? ojs_default_card[0] : ojs_default_card;
+
+viewof selected_card = Inputs.select(ojs_cards, { value: safe_default_card, label: "Select a Card:" })
+viewof show_ci = Inputs.toggle({label: "Show Confidence Interval", value: false})
+```
+
+```{ojs}
+//| output: false
+my_hist = transpose(ojs_hist)
+  .filter(d => d.cardname === selected_card)
+  .map(d => ({ ...d, date: new Date(d.date) }))
+  .sort((a, b) => a.date - b.date)
+
+my_fcst = transpose(ojs_forecast)
+  .filter(d => d.cardname === selected_card)
+  .map(d => ({ ...d, date: new Date(d.date) }))
+  .sort((a, b) => a.date - b.date)
+
+live_fcst = my_fcst.filter(d => d.is_shadow === false)
+shadow_fcst = my_fcst.filter(d => d.is_shadow === true)
+my_info = transpose(ojs_info).find(d => d.cardname === selected_card) || {}
+current_price = my_hist.length > 0 ? my_hist[my_hist.length - 1].price : 0
+
+thirty_days_ago = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+thirty_days_future = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+
+// BRIDGE THE GAP: Connect the end of history to the start of the forecast
+last_hist_pt = my_hist.length > 0 ? my_hist[my_hist.length - 1] : null;
+link_c = last_hist_pt ? { date: last_hist_pt.date, price: last_hist_pt.price, model: "Chronos", conf_low: last_hist_pt.price, conf_high: last_hist_pt.price } : null;
+link_g = last_hist_pt ? { date: last_hist_pt.date, price: last_hist_pt.price, model: "GRU" } : null;
+
+micro_hist = my_hist.filter(d => d.date >= thirty_days_ago && d.date <= thirty_days_future)
+micro_live_c = live_fcst.filter(d => d.model === "Chronos" && d.date >= thirty_days_ago && d.date <= thirty_days_future)
+micro_live_g = live_fcst.filter(d => d.model === "GRU" && d.date >= thirty_days_ago && d.date <= thirty_days_future)
+micro_shadow = shadow_fcst.filter(d => d.date >= thirty_days_ago && d.date <= thirty_days_future)
+
+micro_live_c_conn = link_c ? [link_c, ...micro_live_c] : micro_live_c;
+micro_live_g_conn = link_g ? [link_g, ...micro_live_g] : micro_live_g;
+live_fcst_conn = [...(link_c ? [link_c] : []), ...(link_g ? [link_g] : []), ...live_fcst];
+
+c_val_obj = my_fcst.filter(d => d.model === "Chronos" && d.is_shadow === false).slice(-1)[0]
+g_val_obj = my_fcst.filter(d => d.model === "GRU" && d.is_shadow === false).slice(-1)[0]
+c_val = c_val_obj ? c_val_obj.price : null
+g_val = g_val_obj ? g_val_obj.price : null
+ensemble_val = (c_val && g_val) ? (c_val + g_val) / 2 : (c_val || g_val || 0)
+trend_pct = current_price ? ((ensemble_val - current_price) / current_price) : 0
+trend_color = trend_pct >= 0 ? "#2ecc71" : "#e74c3c"
+trend_icon = trend_pct >= 0 ? "▲" : "▼"
+```
+
+```{ojs}
+// Rendered HTML Sidebar Info
+html`
+<div style="background: #1a252f; border-radius: 8px; padding: 15px; border: 1px solid #34495e; text-align: center; margin-top: 10px;">
+  <img src="${my_info.image_path}" style="width:100%; max-width: 250px; border-radius:8px; box-shadow: 0 4px 8px rgba(0,0,0,0.8); margin-bottom: 15px;">
+  <div style="font-size:14px; color:#ecf0f1; margin-bottom: 8px; border-bottom: 1px solid #18bc9c; padding-bottom: 4px;">${my_info.cardname}</div>
+  <div style="font-size: 24px; font-weight: bold; color: #3498db; margin-bottom: 15px;">$${current_price.toFixed(2)}</div>
+  
+  <div style="font-size: 13px; color: #18bc9c; margin-top: 5px; border-bottom: 1px solid #34495e; padding-bottom: 2px; text-align: left;">30-Day Metrics</div>
+  <div style="font-size: 13px; color: #bbb; line-height: 1.6; padding-top: 5px; text-align: left;">
+    <div style="display: flex; justify-content: space-between;"><span style="color:#f39c12;">Entropy: </span> ${my_info.samp_ent_30d ? my_info.samp_ent_30d.toFixed(3) : "N/A"}</div>
+    <div style="display: flex; justify-content: space-between;"><span style="color:#f39c12;">Hurst: </span> ${my_info.hurst_30d ? my_info.hurst_30d.toFixed(3) : "N/A"}</div>
+    <div style="display: flex; justify-content: space-between;"><span style="color:#f39c12;">Vol (CV): </span> ${my_info.cv_30d ? my_info.cv_30d.toFixed(3) : "N/A"}</div>
+    <div style="display: flex; justify-content: space-between;"><span style="color:#f39c12;">Skew: </span> ${my_info.skewness_30d ? my_info.skewness_30d.toFixed(3) : "N/A"}</div>
+  </div>
+</div>
+`
+```
+
+## Column
+
+```{ojs}
+//| title: "Macro View: All-Time History & Long Term Forecast"
+Plot.plot({
+  height: 350,
+  style: { background: "#1a252f", color: "#ecf0f1", fontSize: "14px" },
+  marginLeft: 75, marginRight: 40, marginTop: 20, marginBottom: 40, grid: true,
+  x: { type: "time", label: "Date" },
+  y: { tickFormat: "$.2f", label: "Market Price", ticks: 6 },
+  color: { domain: ["Chronos", "GRU"], range: ["#f1c40f", "#2ecc71"] },
+  marks: [
+    show_ci ? Plot.areaY(live_fcst_conn.filter(d => d.model === "Chronos"), { x: "date", y1: "conf_low", y2: "conf_high", fill: "#f1c40f", fillOpacity: 0.15 }) : null,
+    Plot.lineY(live_fcst_conn, { x: "date", y: "price", stroke: "model", strokeWidth: 2.5, strokeDasharray: d => d.model === "Chronos" ? "4 4" : "2 2", tip: true }),
+    Plot.lineY(my_hist, { x: "date", y: "price", stroke: "#3498db", strokeWidth: 2.5, tip: true }),
+    Plot.dot(my_hist, Plot.selectLast({ x: "date", y: "price", fill: "#3498db", r: 5 }))
+  ]
+})
 ```
